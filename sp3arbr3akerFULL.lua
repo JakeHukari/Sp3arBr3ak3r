@@ -36,7 +36,8 @@ local AUTOF_ENABLED = false          -- ~28 CPS
 local SKY_MODE_ENABLED = false
 local SP3AR_ENABLED = false          -- Ctrl+F
 
-local MAX_CPS = 7
+local AUTOCLICK_CPS = 10
+local AUTOCLICK_INTERVAL = 1 / AUTOCLICK_CPS
 local AUTOF_PERIOD = 1/28
 local UNDO_LIMIT = 20
 
@@ -81,8 +82,10 @@ local localPlayer = Players.LocalPlayer
 local camera = Workspace.CurrentCamera
 
 local created, binds = {}, {}
-local perPlayer = {}   -- [Player] = {bill, text, hum, outline, indicator}
+local perPlayer = {}   -- [Player] = {bill, text, hum, outline, indicator, cache}
 local brokenSet = {}   -- [BasePart] = true
+local brokenIgnoreCache, scratchIgnore = {}, {}
+local brokenCacheDirty = true
 local undoStack = {}   -- LIFO of {part, cc, ltm, t}
 local nearestPlayerRef = nil
 local screenGui
@@ -111,6 +114,41 @@ local function disconnectAll() for _,c in ipairs(binds) do pcall(function() c:Di
 local function destroyAll() for _,i in ipairs(created) do pcall(function() i:Destroy() end) end; table.clear(created) end
 local function safeDestroy(x) if x then pcall(function() x:Destroy() end) end end
 local function clamp(v, lo, hi) if v<lo then return lo elseif v>hi then return hi else return v end end
+
+local function extendArray(target, source)
+	local offset = #target
+	for i = 1, #source do
+		target[offset + i] = source[i]
+	end
+end
+
+local function makeIntervalRunner(interval)
+	local acc = 0
+	return function(dt)
+		acc += dt
+		if acc >= interval then
+			acc -= interval
+			return true
+		end
+		return false
+	end
+end
+
+local function rebuildBrokenIgnore()
+	if not next(brokenSet) then
+		table.clear(brokenIgnoreCache)
+		brokenCacheDirty = false
+		return
+	end
+	table.clear(brokenIgnoreCache)
+	for part,_ in pairs(brokenSet) do
+		if part and part:IsDescendantOf(Workspace) then
+			brokenIgnoreCache[#brokenIgnoreCache+1] = part
+		end
+	end
+	brokenCacheDirty = false
+end
+
 
 -- GUI root
 do
@@ -255,14 +293,24 @@ end
 local function worldRaycast(origin, direction, ignoreLocalChar, extraIgnore)
 	local params = RaycastParams.new()
 	params.FilterType = Enum.RaycastFilterType.Exclude
-	local ignore = {}
-	for part,_ in pairs(brokenSet) do if part and part:IsDescendantOf(Workspace) then table.insert(ignore, part) end end
+	if brokenCacheDirty then
+		rebuildBrokenIgnore()
+	end
+	local ignore = scratchIgnore
+	table.clear(ignore)
+	if #brokenIgnoreCache > 0 then
+		extendArray(ignore, brokenIgnoreCache)
+	end
 	if ignoreLocalChar then
 		local ch = localPlayer.Character
-		if ch then table.insert(ignore, ch) end
+		if ch then
+			ignore[#ignore+1] = ch
+		end
 	end
 	if extraIgnore then
-		for _,inst in ipairs(extraIgnore) do table.insert(ignore, inst) end
+		for _,inst in ipairs(extraIgnore) do
+			ignore[#ignore+1] = inst
+		end
 	end
 	params.FilterDescendantsInstances = ignore
 	params.IgnoreWater = true
@@ -340,14 +388,22 @@ end
 local function markBroken(part)
 	if not part or not part:IsA("BasePart") then return end
 	brokenSet[part] = true
+	brokenCacheDirty = true
 	table.insert(undoStack, {part=part, cc=part.CanCollide, ltm=part.LocalTransparencyModifier, t=part.Transparency})
 	if #undoStack > UNDO_LIMIT then table.remove(undoStack, 1) end
 	part.CanCollide = false; part.LocalTransparencyModifier = 1; part.Transparency = 1
 end
 local function unbreakLast()
 	local e = table.remove(undoStack)
-	if not e or not e.part or not e.part:IsDescendantOf(game) then return end
+	if not e or not e.part or not e.part:IsDescendantOf(game) then
+		if e and e.part then
+			brokenSet[e.part] = nil
+			brokenCacheDirty = true
+		end
+		return
+	end
 	brokenSet[e.part] = nil
+	brokenCacheDirty = true
 	e.part.CanCollide = e.cc; e.part.LocalTransparencyModifier = e.ltm; e.part.Transparency = e.t
 end
 local sweepAccum = 0
@@ -358,16 +414,44 @@ local function sweepUndo(dt)
 	local i = 1
 	while i <= #undoStack do
 		local e = undoStack[i]
-		if not e.part or not e.part:IsDescendantOf(game) then table.remove(undoStack, i) else i += 1 end
+		if not e.part or not e.part:IsDescendantOf(game) then
+			if e and e.part then
+				brokenSet[e.part] = nil
+				brokenCacheDirty = true
+			end
+			table.remove(undoStack, i)
+		else
+			i += 1
+		end
 	end
 end
+
+local function pruneBrokenSet()
+	local removed = false
+	for part,_ in pairs(brokenSet) do
+		if not part or not part:IsDescendantOf(Workspace) then
+			brokenSet[part] = nil
+			removed = true
+		end
+	end
+	if removed then
+		brokenCacheDirty = true
+	end
+end
+
+local runNearestUpdate = makeIntervalRunner(0.05)
+local runVisualUpdate = makeIntervalRunner(0.1)
+local runCleanupSweep = makeIntervalRunner(2)
 
 -- ESP
 local function destroyPerPlayer(p)
 	local pp = perPlayer[p]; if not pp then return end
 	if pp.bill then safeDestroy(pp.bill) end
 	if pp.outline then safeDestroy(pp.outline) end
-	if pp.indicator then safeDestroy(pp.indicator) end
+	if pp.indicator then
+		hideIndicator(pp.indicator)
+		safeDestroy(pp.indicator)
+	end
 	perPlayer[p] = nil
 end
 local function setESPVisible(p, visible)
@@ -389,49 +473,155 @@ local function billboardFor(p, character)
 	bill.StudsOffset=Vector3.new(0,2,0); bill.Enabled=ESP_ENABLED; bill.Parent=head; track(bill)
 	local t = Instance.new("TextLabel"); t.Name="T"; t.BackgroundTransparency=1; t.Size=UDim2.fromScale(1,1)
 	t.Font=Enum.Font.GothamBold; t.TextScaled=false; t.TextSize=14; t.TextColor3=RED; t.TextStrokeTransparency=0; t.TextStrokeColor3=WHITE; t.Text=""; t.Parent=bill
-	perPlayer[p] = perPlayer[p] or {}; perPlayer[p].bill=bill; perPlayer[p].text=t; perPlayer[p].hum=hum
+	local entry = perPlayer[p] or {}
+	entry.bill = bill
+	entry.text = t
+	entry.hum = hum
+	entry.cache = entry.cache or {}
+	perPlayer[p] = entry
 end
 local function rebuildForCharacter(p, character)
 	destroyPerPlayer(p); if not character then return end
-	local outline = createOutlineForCharacter(character, ESP_ENABLED); billboardFor(p, character)
-	perPlayer[p].outline = outline; perPlayer[p].indicator = ensureIndicator(indicatorFolder, "PI_"..p.UserId)
+	billboardFor(p, character)
+	local data = perPlayer[p]
+	if not data then return end
+	data.cache = data.cache or {}
+	table.clear(data.cache)
+	data.outline = createOutlineForCharacter(character, ESP_ENABLED)
+	data.indicator = ensureIndicator(indicatorFolder, "PI_"..p.UserId)
+	data.character = character
+	data.root = character:FindFirstChild("HumanoidRootPart")
+	data.hum = character:FindFirstChildOfClass("Humanoid")
 end
 local function updateNearestPlayer()
-	local myChar = localPlayer.Character; local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
-	if not myRoot then nearestPlayerRef=nil return end
-	local best, bestDist=nil,1e9
-	for _,p in ipairs(Players:GetPlayers()) do
-		if p ~= localPlayer then
-			local ch=p.Character; local root=ch and ch:FindFirstChild("HumanoidRootPart")
-			if root then local d=(root.Position - myRoot.Position).Magnitude; if d<bestDist then best, bestDist=p,d end end
+	local myChar = localPlayer.Character
+	local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
+	if not myRoot then
+		nearestPlayerRef = nil
+		return
+	end
+	local best, bestDist = nil, nil
+	for p,data in pairs(perPlayer) do
+		local character = p.Character or data.character
+		local root = data.root
+		if character then
+			if not root or root.Parent ~= character then
+				root = character:FindFirstChild("HumanoidRootPart")
+				data.root = root
+			end
+		end
+		if root and root:IsDescendantOf(Workspace) then
+			local d = (root.Position - myRoot.Position).Magnitude
+			if not bestDist or d < bestDist then
+				best, bestDist = p, d
+			end
 		end
 	end
 	nearestPlayerRef = best
 end
-local function updatePlayerVisuals(dt)
-	for p,pp in pairs(perPlayer) do
-		local ch=p.Character; local root=ch and ch:FindFirstChild("HumanoidRootPart"); local bill=pp.bill; local indicator=pp.indicator
-		if not ch or not root then if bill then bill.Enabled=false end; hideIndicator(indicator)
-		else
-			local onScreen, v2, edge, angle = projectToEdge(root.Position)
-			if bill and pp.text then
-				local dist=(camera.CFrame.Position - root.Position).Magnitude
-				local scale=math.clamp(NAME_DIST_REF / math.max(dist,1), NAME_MIN_SCALE, NAME_MAX_SCALE)
-				bill.Size=UDim2.fromOffset(NAME_BASE_W*scale, NAME_BASE_H*scale)
-				local hp=pp.hum and math.floor((pp.hum.Health or 0)+0.5) or 0
-				pp.text.Text=string.format("%s  •  %dm  •  %dhp", p.DisplayName or p.Name, math.floor(dist+0.5), hp)
-				if p==nearestPlayerRef then pp.text.TextColor3=PINK; pp.text.ZIndex=10 else pp.text.TextColor3=AUTOCLICK_ENABLED and GREEN or RED; pp.text.ZIndex=1 end
-			end
-			if onScreen and ESP_ENABLED then if bill then bill.Enabled=true end; hideIndicator(indicator)
-			else
-				if bill then bill.Enabled=false end
-				local dist=(camera.CFrame.Position - root.Position).Magnitude
-				local color=(p==nearestPlayerRef) and PINK or (AUTOCLICK_ENABLED and GREEN or RED)
-				local label=string.format("%s · %dm", p.DisplayName or p.Name, math.floor(dist+0.5))
-				placeIndicator(indicator, color, label, edge, angle)
-			end
-			if pp.outline then pp.outline.Enabled = ESP_ENABLED end
+local function updateSinglePlayerVisual(p, data)
+	local cache = data.cache
+	if not cache then
+		cache = {}
+		data.cache = cache
+	end
+	local character = p.Character or data.character
+	data.character = character
+	local root = data.root
+	if character then
+		if not root or root.Parent ~= character then
+			root = character:FindFirstChild("HumanoidRootPart")
+			data.root = root
 		end
+	else
+		root = nil
+	end
+	if not character or not root then
+		if data.bill and cache.billEnabled then
+			data.bill.Enabled = false
+		end
+		cache.billEnabled = false
+		if cache.indicatorVisible then
+			hideIndicator(data.indicator)
+			cache.indicatorVisible = false
+		end
+		return
+	end
+	local hum = data.hum
+	if not hum or hum.Parent ~= character then
+		hum = character:FindFirstChildOfClass("Humanoid")
+		data.hum = hum
+	end
+	local onScreen, _, edge, angle = projectToEdge(root.Position)
+	if onScreen == nil then return end
+	local dist = (camera.CFrame.Position - root.Position).Magnitude
+	local distRounded = math.floor(dist + 0.5)
+	local scale = math.clamp(NAME_DIST_REF / math.max(dist, 1), NAME_MIN_SCALE, NAME_MAX_SCALE)
+	local hp = hum and math.floor((hum.Health or 0) + 0.5) or 0
+	local name = p.DisplayName or p.Name
+	local isNearest = (p == nearestPlayerRef)
+	local textColor = isNearest and PINK or (AUTOCLICK_ENABLED and GREEN or RED)
+	local textZ = isNearest and 10 or 1
+	if data.bill then
+		if math.abs((cache.billScale or 0) - scale) > 0.01 then
+			data.bill.Size = UDim2.fromOffset(NAME_BASE_W * scale, NAME_BASE_H * scale)
+			cache.billScale = scale
+		end
+		local shouldEnable = ESP_ENABLED and onScreen
+		if cache.billEnabled ~= shouldEnable then
+			data.bill.Enabled = shouldEnable
+			cache.billEnabled = shouldEnable
+		end
+		if data.text then
+			if cache.billDist ~= distRounded or cache.billHP ~= hp or cache.billName ~= name then
+				local textValue = string.format("%s  •  %dm  •  %dhp", name, distRounded, hp)
+				data.text.Text = textValue
+				cache.billDist = distRounded
+				cache.billHP = hp
+				cache.billName = name
+				cache.billText = textValue
+			end
+			if cache.billColor ~= textColor then
+				data.text.TextColor3 = textColor
+				cache.billColor = textColor
+			end
+			if cache.billZ ~= textZ then
+				data.text.ZIndex = textZ
+				cache.billZ = textZ
+			end
+		end
+	end
+	if data.outline then
+		data.outline.Enabled = ESP_ENABLED
+	end
+	if not (onScreen and ESP_ENABLED) then
+		local indicator = data.indicator
+		if indicator then
+			local indicatorColor = textColor
+			local labelText = cache.indicatorText
+			if cache.indicatorDist ~= distRounded or cache.indicatorName ~= name then
+				labelText = string.format("%s · %dm", name, distRounded)
+				cache.indicatorDist = distRounded
+				cache.indicatorName = name
+				cache.indicatorText = labelText
+			end
+			cache.indicatorColor = indicatorColor
+			placeIndicator(indicator, indicatorColor, labelText, edge, angle)
+			cache.indicatorVisible = true
+		end
+	else
+		if cache.indicatorVisible then
+			hideIndicator(data.indicator)
+			cache.indicatorVisible = false
+		end
+	end
+end
+
+local function updatePlayerVisuals()
+	camera = Workspace.CurrentCamera or camera
+	if not camera then return end
+	for p,data in pairs(perPlayer) do
+		updateSinglePlayerVisual(p, data)
 	end
 end
 local function createForPlayer(p)
@@ -545,6 +735,11 @@ bind(UserInputService.InputBegan:Connect(function(input,gp)
 		disconnectAll()
 		for p,_ in pairs(perPlayer) do destroyPerPlayer(p) end
 		perPlayer = {}
+		table.clear(brokenSet)
+		table.clear(undoStack)
+		table.clear(brokenIgnoreCache)
+		table.clear(scratchIgnore)
+		brokenCacheDirty = true
 		hoverHL.Enabled=false; safeDestroy(hoverHL)
 		if guideFrame then safeDestroy(guideFrame) end
 		for _,f in pairs(wpIndicatorMap) do safeDestroy(f) end
@@ -559,6 +754,12 @@ end))
 
 -- Auto-F, AutoClick, Sp3ar, UI refresh
 local lastF, lastClick, uiAccum = 0,0,0
+local autoClickActive = false
+
+local function sendAutoClick(mouseX, mouseY)
+	VirtualInputManager:SendMouseButtonEvent(mouseX, mouseY, 0, true, game, 0)
+	VirtualInputManager:SendMouseButtonEvent(mouseX, mouseY, 0, false, game, 0)
+end
 
 local prevMouseBehavior = nil
 local function beginSp3arMouse()
@@ -627,12 +828,20 @@ bind(RunService.Heartbeat:Connect(function(dt)
 	else hoverHL.Enabled=false end
 
 	-- Nearest and visuals
-	updateNearestPlayer()
-	updatePlayerVisuals(dt)
+	if runNearestUpdate(dt) then
+		updateNearestPlayer()
+	end
+	if runVisualUpdate(dt) then
+		updatePlayerVisuals()
+	end
 
 	-- Throttled UI work
 	uiAccum += dt
 	if uiAccum >= 0.1 then uiAccum = 0; refreshWaypointGuide(); updateWaypointIndicators() end
+
+	if runCleanupSweep(dt) then
+		pruneBrokenSet()
+	end
 
 	-- Br3ak3r sweeper
 	sweepUndo(dt)
@@ -643,21 +852,36 @@ bind(RunService.Heartbeat:Connect(function(dt)
 		while lastF >= AUTOF_PERIOD do lastF -= AUTOF_PERIOD; VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.F, false, game); VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.F, false, game) end
 	else lastF = 0 end
 
-	-- AutoClick: ONLY when mouse over a valid player
+	-- AutoClick: immediate start + steady CPS while over a valid player
 	if AUTOCLICK_ENABLED and hasVIM then
-		local o,d,mouseX,mouseY = getMouseRay()
-		if o and d then
-			local result = worldRaycast(o,d,true)
-			local p = result and hitIsPlayer(result.Instance) or nil
-			if p then
-				local inst = result.Instance
-				if not HEADSHOT_ONLY or (inst and inst.Name=="Head") then
-					lastClick += dt; local threshold = 0.1 / math.max(0.1, MAX_CPS)
-					if lastClick >= threshold then lastClick -= threshold; VirtualInputManager:SendMouseButtonEvent(mouseX, mouseY, 0, true, game, 0); VirtualInputManager:SendMouseButtonEvent(mouseX, mouseY, 0, false, game, 0) end
-				else lastClick = 0 end
-			else lastClick = 0 end
+		local origin, direction, mouseX, mouseY = getMouseRay()
+		if origin and direction then
+			local result = worldRaycast(origin, direction, true)
+			local inst = result and result.Instance
+			local player = inst and hitIsPlayer(inst)
+			if player and (not HEADSHOT_ONLY or inst.Name == "Head") then
+				if not autoClickActive then
+					sendAutoClick(mouseX, mouseY)
+					autoClickActive = true
+					lastClick = 0
+				end
+				lastClick += dt
+				while lastClick >= AUTOCLICK_INTERVAL do
+					lastClick -= AUTOCLICK_INTERVAL
+					sendAutoClick(mouseX, mouseY)
+				end
+			else
+				autoClickActive = false
+				lastClick = 0
+			end
+		else
+			autoClickActive = false
+			lastClick = 0
 		end
-	else lastClick = 0 end
+	else
+		autoClickActive = false
+		lastClick = 0
+	end
 
 	-- Sp3ar
 	sp3arUpdate()
