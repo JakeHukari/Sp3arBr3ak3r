@@ -2,13 +2,11 @@
 
 ## Project Structure & Module Organization
 - Source lives at the root in `sp3arbr3aker.lua` (Roblox LocalScript).
-- If you split code, use `src/` for reusable modules and keep the entrypoint at root:
-  - Examples: `src/ui.lua`, `src/aim.lua`, `src/esp.lua`; require them from `sp3arbr3aker.lua`.
 - Keep module names descriptive and short; prefer `sb3_<area>.lua` for internal modules.
 
 ## Build, Test, and Development Commands
-- Build: none. This script runs directly in Roblox Studio.
-- Run (Studio): place `sp3arbr3aker.lua` as a LocalScript under `StarterPlayerScripts` or `PlayerGui`, then click Play. The guide header “Sp3arBr3ak3r 1.12b” should appear.
+- Build: none. This script runs directly in script executor.
+- Run (Studio): place `sp3arbr3aker.lua` as a LocalScript under `StarterPlayerScripts` or `PlayerGui`, then click Play. The guide header “Sp3arBr3ak3r” should appear.
 - Format (optional): `stylua sp3arbr3aker.lua` or `stylua .`
 - Lint (optional): `luacheck sp3arbr3aker.lua`
 
