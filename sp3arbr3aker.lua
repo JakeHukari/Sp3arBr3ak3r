@@ -789,22 +789,31 @@ local function update(dt)
                                     rec.lastVis = false
                                 end
                             end
-                            end
                         else
                             if rec.lastVis then
                                 label.Visible = false
                                 rec.lastVis = false
                             end
                         end
-				else
-					if rec and rec.lastVis then
-						label.Visible = false
-						rec.lastVis = false
-					end
-				end
-			end
-		end
-		end
+                    else
+                        if rec.lastVis then
+                            label.Visible = false
+                            rec.lastVis = false
+                        end
+                    end
+                else
+                    if rec.lastVis then
+                        label.Visible = false
+                        rec.lastVis = false
+                    end
+                end
+            else
+                if rec and rec.lastVis and rec.label then
+                    rec.label.Visible = false
+                    rec.lastVis = false
+                end
+            end
+        end
 
         -- Border updates minimized
         if lastACState ~= AUTOCLICK_ENABLED then
