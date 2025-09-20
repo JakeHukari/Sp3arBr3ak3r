@@ -1,6 +1,31 @@
 -- Sp3arBr3ak3r Lite - minimal client-only utilities
 -- Features: Guide, ESP, Br3ak3r (hide part), AutoClick, Waypoints, Killswitch
 
+local globalEnv = (getgenv and getgenv()) or _G
+if globalEnv.SP3ARBR3AKER_ACTIVE then
+	return
+end
+globalEnv.SP3ARBR3AKER_ACTIVE = true
+
+local stepWait = (task and task.wait) or wait
+local function stepSpawn(fn, ...)
+	if task and task.spawn then
+		return task.spawn(fn, ...)
+	end
+	local thread = coroutine.create(fn)
+	local ok, err = coroutine.resume(thread, ...)
+	if not ok then
+		warn("[Sp3arBr3ak3r] spawn error: " .. tostring(err))
+	end
+	return thread
+end
+
+local function releaseGlobalFlag()
+	if globalEnv then
+		globalEnv.SP3ARBR3AKER_ACTIVE = nil
+	end
+end
+
 -- Services
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -13,9 +38,22 @@ end)
 
 -- State
 local localPlayer = Players.LocalPlayer
-local camera = Workspace.CurrentCamera
-local mouse = localPlayer:GetMouse()
+if not localPlayer then
+	repeat
+		stepWait()
+		localPlayer = Players.LocalPlayer
+	until localPlayer
+end
 
+local camera = Workspace.CurrentCamera
+if not camera then
+	repeat
+		stepWait()
+		camera = Workspace.CurrentCamera
+	until camera
+end
+
+local mouse = localPlayer:GetMouse()
 local ESP_ENABLED = true
 local BREAKER_ENABLED = true
 local AUTOCLICK_ENABLED = false
@@ -71,6 +109,56 @@ local devHUDEnabled = false
 local devNextHUD = 0
 local lastVisCount = 0
 
+local function resolveGuiParent()
+	if typeof(gethui) == "function" then
+		local ok, ui = pcall(gethui)
+		if ok and typeof(ui) == "Instance" and ui.Parent then
+			return ui
+		end
+	end
+
+	if localPlayer then
+		local gui = localPlayer:FindFirstChildOfClass("PlayerGui")
+		if gui then
+			return gui
+		end
+		local ok, waited = pcall(function()
+			return localPlayer:WaitForChild("PlayerGui", 2)
+		end)
+		if ok and waited then
+			return waited
+		end
+	end
+
+	local ok, core = pcall(function()
+		return game:GetService("CoreGui")
+	end)
+	if ok and core then
+		return core
+	end
+
+	return nil
+end
+
+local function parentGui(gui)
+	if not gui or gui.Parent then
+		return
+	end
+	local target = resolveGuiParent()
+	if target then
+		if syn and syn.protect_gui then
+			pcall(syn.protect_gui, gui)
+		end
+		gui.Parent = target
+	else
+		stepSpawn(function()
+			stepWait(0.25)
+			if gui and not gui.Parent then
+				parentGui(gui)
+			end
+		end)
+	end
+end
 -- UI roots
 local screenGui
 local guideFrame
@@ -200,7 +288,13 @@ local function ensureUI()
     screenGui.IgnoreGuiInset = true
     screenGui.DisplayOrder = 1
     screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-    screenGui.Parent = (localPlayer:FindFirstChildOfClass("PlayerGui") or localPlayer:WaitForChild("PlayerGui"))
+    parentGui(screenGui)
+
+    bind(screenGui.AncestryChanged:Connect(function(_, parent)
+        if not parent and not dead then
+            parentGui(screenGui)
+        end
+    end))
 
     espFolder = track(Instance.new("Folder"))
     espFolder.Name = "Overlay"
@@ -651,40 +745,41 @@ local function update(dt)
                         if cosAng > cosThresh then
                             local v3, onScreen = camera:WorldToViewportPoint(headPos)
                             if onScreen and v3.Z > 0 then
-                            label.Position = UDim2.fromOffset(v3.X, v3.Y - 18)
-                            local dBucket = math.floor(dist / 5)
-                            visIndex = visIndex + 1
-                            local doHeavy = (((visIndex - frameRound) % dynamicStride) == 0) or (rec.lastBucket ~= dBucket) or (not rec.lastVis)
-                            if doHeavy then
-                                local wantText = plr.Name .. " [" .. (dBucket * 5) .. "]"
-                                if rec.lastText ~= wantText then
-                                    label.Text = wantText
-                                    rec.lastText = wantText
+                                label.Position = UDim2.fromOffset(v3.X, v3.Y - 18)
+                                local dBucket = math.floor(dist / 5)
+                                visIndex = visIndex + 1
+                                local doHeavy = (((visIndex - frameRound) % dynamicStride) == 0) or (rec.lastBucket ~= dBucket) or (not rec.lastVis)
+                                if doHeavy then
+                                    local wantText = plr.Name .. " [" .. (dBucket * 5) .. "]"
+                                    if rec.lastText ~= wantText then
+                                        label.Text = wantText
+                                        rec.lastText = wantText
+                                    end
+                                    local w = clamp(80 + dist * -0.1, 70, 120)
+                                    if rec.lastW ~= w then
+                                        label.Size = UDim2.fromOffset(w, 16)
+                                        rec.lastW = w
+                                    end
+                                    rec.lastBucket = dBucket
                                 end
-                                local w = clamp(80 + dist * -0.1, 70, 120)
-                                if rec.lastW ~= w then
-                                    label.Size = UDim2.fromOffset(w, 16)
-                                    rec.lastW = w
+                                if not rec.lastVis then
+                                    label.Visible = true
+                                    rec.lastVis = true
+                                    -- set base outline immediately; nearest will override below
+                                    if rec.lastBorder ~= baseOutline then
+                                        label.BorderColor3 = baseOutline
+                                        rec.lastBorder = baseOutline
+                                    end
                                 end
-                                rec.lastBucket = dBucket
-                            end
-                            if not rec.lastVis then
-                                label.Visible = true
-                                rec.lastVis = true
-                                -- set base outline immediately; nearest will override below
-                                if rec.lastBorder ~= baseOutline then
-                                    label.BorderColor3 = baseOutline
-                                    rec.lastBorder = baseOutline
+                                if dist < nearestDist then
+                                    nearestDist = dist
+                                    nearestPlr = plr
                                 end
-                            end
-                            if dist < nearestDist then
-                                nearestDist = dist
-                                nearestPlr = plr
-                            end
                             else
-                            if rec.lastVis then
-                                label.Visible = false
-                                rec.lastVis = false
+                                if rec.lastVis then
+                                    label.Visible = false
+                                    rec.lastVis = false
+                                end
                             end
                             end
                         else
@@ -700,6 +795,7 @@ local function update(dt)
 					end
 				end
 			end
+		end
 		end
 
         -- Border updates minimized
@@ -893,6 +989,7 @@ local function onInputBegan(input, gp)
 			waypoints = {}
 			undoStack = {}
 			brokenSet = {}
+			releaseGlobalFlag()
 			destroyAll()
 			return
 		end
@@ -969,15 +1066,15 @@ end))
 if togglesSection then togglesSection.Visible = false end
 setMinimized(true)
 
-task.spawn(function()
+stepSpawn(function()
     -- Stage 1: prewarm tracking
     local list = Players:GetPlayers()
     for i = 1, #list do
         local plr = list[i]
         trackPlayer(plr)
-        if i % 5 == 0 then task.wait() end
+        if i % 5 == 0 then stepWait() end
     end
-    task.wait(0.1)
+    stepWait(0.1)
     -- Stage 2: reveal UI
     if togglesSection then togglesSection.Visible = true end
     if loadingLabel then loadingLabel.Visible = false end
