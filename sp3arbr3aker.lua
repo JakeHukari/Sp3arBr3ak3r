@@ -449,18 +449,26 @@ end
 
 -- ESP
 local function trackPlayer(plr)
+	ensureUI()
 	if plr == localPlayer then
 		return
 	end
-	if perPlayer[plr] and perPlayer[plr].label and perPlayer[plr].label.Parent then
+	local rec = perPlayer[plr]
+	if rec then
+		if rec.label and not rec.label.Parent and espFolder then
+			rec.label.Parent = espFolder
+		end
 		return
 	end
-    local l = mkLabel(espFolder)
-    local hue = rng:NextNumber()
-    local nameColor = Color3.fromHSV(hue, 0.85, 1)
-    l.TextColor3 = nameColor
-    perPlayer[plr] = { label = l, lastVis = false, lastText = nil, lastW = nil, color = nameColor, lastBorder = nil, lastBucket = nil }
-    enemyList[#enemyList + 1] = plr
+	if not espFolder then
+		return
+	end
+	local l = mkLabel(espFolder)
+	local hue = rng:NextNumber()
+	local nameColor = Color3.fromHSV(hue, 0.85, 1)
+	l.TextColor3 = nameColor
+	perPlayer[plr] = { label = l, lastVis = false, lastText = nil, lastW = nil, color = nameColor, lastBorder = nil, lastBucket = nil }
+	enemyList[#enemyList + 1] = plr
 end
 
 local function untrackPlayer(plr)
