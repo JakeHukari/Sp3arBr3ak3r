@@ -12,7 +12,7 @@ Killswitch [Ctrl+6] — full cleanup (UI, outlines, indicators, sky, connections
 -- - Sp3ar reworked: no smoothing; uses VirtualInputManager mouse movement toward target head.
 -- - Restores prior MouseBehavior on release or killswitch. No other systems changed.
 
--- Sp3arBr3ak3r-1.12b (LocalScript)
+-- Sp3arBr3ak3r-1.12bLite 
 
 -- Services
 local Players = game:GetService("Players")
@@ -32,7 +32,7 @@ local SKY_MODE_ENABLED = false
 
 local AUTOCLICK_CPS = 25
 local AUTOCLICK_INTERVAL = 1 / AUTOCLICK_CPS
-local UNDO_LIMIT = 20
+local UNDO_LIMIT = 25
 
 -- Visuals
 local PINK  = Color3.fromRGB(255,105,180)
@@ -200,7 +200,7 @@ local function ensureGuide()
 		local title = Instance.new("TextLabel")
 		title.BackgroundTransparency = 1
 		title.Size = UDim2.fromOffset(0,18)
-		title.Text = "Sp3arBr3ak3r 1.12b"
+		title.Text = "Sp3arBr3ak3r 1.12bLITE"
 		title.TextXAlignment = Enum.TextXAlignment.Left
 		title.TextYAlignment = Enum.TextYAlignment.Top
 		title.Font = Enum.Font.GothamBold
