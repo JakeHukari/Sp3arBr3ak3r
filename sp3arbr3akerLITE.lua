@@ -30,7 +30,7 @@ local CLICKBREAK_ENABLED = true      -- shown as "Br3ak3r" in UI
 local AUTOCLICK_ENABLED = false
 local SKY_MODE_ENABLED = false
 
-local AUTOCLICK_CPS = 10
+local AUTOCLICK_CPS = 25
 local AUTOCLICK_INTERVAL = 1 / AUTOCLICK_CPS
 local UNDO_LIMIT = 20
 
