@@ -38,6 +38,7 @@ local SP3AR_ENABLED = false          -- Ctrl+F
 
 local AUTOCLICK_CPS = 10
 local AUTOCLICK_INTERVAL = 1 / AUTOCLICK_CPS
+local RAYCAST_MAX_DISTANCE = 10000
 local AUTOF_PERIOD = 1/28
 local UNDO_LIMIT = 20
 
@@ -288,7 +289,7 @@ local function getMouseRay()
 	local loc = UserInputService:GetMouseLocation()
 	local ray = screenToRay(loc.X, loc.Y)
 	if not ray then return end
-	return ray.Origin, ray.Direction*1000, loc.X, loc.Y
+	return ray.Origin, ray.Direction*RAYCAST_MAX_DISTANCE, loc.X, loc.Y
 end
 local function worldRaycast(origin, direction, ignoreLocalChar, extraIgnore)
 	local params = RaycastParams.new()
@@ -753,8 +754,8 @@ bind(UserInputService.InputBegan:Connect(function(input,gp)
 end))
 
 -- Auto-F, AutoClick, Sp3ar, UI refresh
-local lastF, lastClick, uiAccum = 0,0,0
-local autoClickActive = false
+local lastF, lastClick, uiAccum = 0,AUTOCLICK_INTERVAL,0
+local autoClickTargetPlayer, autoClickTargetPart = nil, nil
 
 local function sendAutoClick(mouseX, mouseY)
 	VirtualInputManager:SendMouseButtonEvent(mouseX, mouseY, 0, true, game, 0)
@@ -860,27 +861,28 @@ bind(RunService.Heartbeat:Connect(function(dt)
 			local inst = result and result.Instance
 			local player = inst and hitIsPlayer(inst)
 			if player and (not HEADSHOT_ONLY or inst.Name == "Head") then
-				if not autoClickActive then
-					sendAutoClick(mouseX, mouseY)
-					autoClickActive = true
-					lastClick = 0
+				local targetChanged = player ~= autoClickTargetPlayer or inst ~= autoClickTargetPart
+				autoClickTargetPlayer, autoClickTargetPart = player, inst
+				if targetChanged then
+					lastClick = AUTOCLICK_INTERVAL + dt
+				else
+					lastClick += dt
 				end
-				lastClick += dt
 				while lastClick >= AUTOCLICK_INTERVAL do
 					lastClick -= AUTOCLICK_INTERVAL
 					sendAutoClick(mouseX, mouseY)
 				end
 			else
-				autoClickActive = false
-				lastClick = 0
+				autoClickTargetPlayer, autoClickTargetPart = nil, nil
+				lastClick = AUTOCLICK_INTERVAL
 			end
 		else
-			autoClickActive = false
-			lastClick = 0
+			autoClickTargetPlayer, autoClickTargetPart = nil, nil
+			lastClick = AUTOCLICK_INTERVAL
 		end
 	else
-		autoClickActive = false
-		lastClick = 0
+		autoClickTargetPlayer, autoClickTargetPart = nil, nil
+		lastClick = AUTOCLICK_INTERVAL
 	end
 
 	-- Sp3ar
